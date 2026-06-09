@@ -1,0 +1,184 @@
+"""
+TASK 4: Sales Prediction using Python
+CodeAlpha Data Science Internship
+
+Features: TV, Radio, Newspaper advertising budgets → Sales
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings("ignore")
+
+print("=" * 60)
+print("  SALES PREDICTION — CodeAlpha Task 4")
+print("=" * 60)
+
+# ── 1. Synthetic Advertising-Sales Dataset ────────────────────────────────────
+np.random.seed(0)
+n = 200
+
+TV        = np.random.uniform(0.7, 296, n)
+Radio     = np.random.uniform(0.0, 49.6, n)
+Newspaper = np.random.uniform(0.3, 114, n)
+
+# Sales formula (TV & Radio drive sales; Newspaper minimal)
+Sales = (
+    0.046 * TV
+    + 0.188 * Radio
+    + 0.001 * Newspaper
+    + 2.94
+    + np.random.normal(0, 0.9, n)
+).clip(1)
+
+df = pd.DataFrame({"TV": TV, "Radio": Radio, "Newspaper": Newspaper, "Sales": Sales})
+df = df.round(2)
+
+print(f"\nDataset shape  : {df.shape}")
+print(f"\nSample rows:\n{df.head()}")
+print(f"\nDescriptive stats:\n{df.describe()}")
+
+# ── 2. EDA ────────────────────────────────────────────────────────────────────
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+fig.suptitle("Sales Prediction — Advertising EDA", fontsize=15, fontweight="bold")
+pal = ["#E63946", "#2A9D8F", "#E9C46A"]
+
+for i, (feat, color) in enumerate(zip(["TV","Radio","Newspaper"], pal)):
+    # Scatter
+    axes[0, i].scatter(df[feat], df["Sales"], alpha=0.5, color=color, s=30)
+    m, b = np.polyfit(df[feat], df["Sales"], 1)
+    xs = np.linspace(df[feat].min(), df[feat].max(), 100)
+    axes[0, i].plot(xs, m*xs+b, "k--", lw=1.5)
+    axes[0, i].set_xlabel(f"{feat} Ad Spend ($000s)")
+    axes[0, i].set_ylabel("Sales (units)")
+    axes[0, i].set_title(f"{feat} vs Sales")
+
+# Sales distribution
+axes[1, 0].hist(df["Sales"], bins=25, color="#457B9D", edgecolor="white")
+axes[1, 0].set_title("Sales Distribution"); axes[1, 0].set_xlabel("Sales")
+
+# Correlation heatmap
+sns.heatmap(df.corr(), annot=True, fmt=".2f", cmap="coolwarm",
+            ax=axes[1, 1], square=True, linewidths=0.5)
+axes[1, 1].set_title("Correlation Heatmap")
+
+# Ad spend composition
+avg_spend = df[["TV","Radio","Newspaper"]].mean()
+axes[1, 2].pie(avg_spend, labels=avg_spend.index, autopct="%1.1f%%",
+               colors=pal, startangle=90, wedgeprops={"edgecolor":"white"})
+axes[1, 2].set_title("Avg Ad Spend Breakdown")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/sales_eda.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ EDA plot saved → sales_eda.png")
+
+# ── 3. Feature Engineering ────────────────────────────────────────────────────
+df["TV_Radio_interaction"] = df["TV"] * df["Radio"]
+df["Total_spend"]          = df["TV"] + df["Radio"] + df["Newspaper"]
+df["TV_share"]             = df["TV"] / df["Total_spend"]
+df["Radio_share"]          = df["Radio"] / df["Total_spend"]
+
+feature_cols = ["TV", "Radio", "Newspaper", "TV_Radio_interaction", "Total_spend",
+                "TV_share", "Radio_share"]
+X = df[feature_cols].values
+y = df["Sales"].values
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# ── 4. Models ─────────────────────────────────────────────────────────────────
+models = {
+    "Linear Regression"  : Pipeline([("sc", StandardScaler()), ("m", LinearRegression())]),
+    "Ridge"              : Pipeline([("sc", StandardScaler()), ("m", Ridge(alpha=1))]),
+    "Lasso"              : Pipeline([("sc", StandardScaler()), ("m", Lasso(alpha=0.01))]),
+    "Polynomial (deg 2)" : Pipeline([("poly", PolynomialFeatures(2, include_bias=False)),
+                                     ("sc", StandardScaler()),
+                                     ("m", LinearRegression())]),
+    "Random Forest"      : RandomForestRegressor(n_estimators=100, random_state=42),
+    "Gradient Boosting"  : GradientBoostingRegressor(n_estimators=100, random_state=42),
+}
+
+results = {}
+print("\n─── Model Comparison ────────────────────────────────")
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    r2   = r2_score(y_test, y_pred)
+    mae  = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    results[name] = {"R²": r2, "MAE": mae, "RMSE": rmse, "model": model}
+    print(f"  {name:<22} R²={r2:.4f}  MAE={mae:.4f}  RMSE={rmse:.4f}")
+
+best_name = max(results, key=lambda n: results[n]["R²"])
+print(f"\n🏆 Best model: {best_name}  R²={results[best_name]['R²']:.4f}")
+
+# ── 5. Visualise best model + advertising budget analysis ─────────────────────
+best_model = results[best_name]["model"]
+y_pred_best = best_model.predict(X_test)
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+fig.suptitle(f"Sales Prediction — {best_name}", fontsize=13, fontweight="bold")
+
+# Actual vs Predicted
+axes[0].scatter(y_test, y_pred_best, alpha=0.6, color="#2A9D8F", s=50)
+mn, mx = y_test.min(), y_test.max()
+axes[0].plot([mn, mx], [mn, mx], "r--", lw=2)
+axes[0].set_xlabel("Actual Sales"); axes[0].set_ylabel("Predicted Sales")
+axes[0].set_title("Actual vs Predicted")
+
+# Residuals
+residuals = y_test - y_pred_best
+axes[1].hist(residuals, bins=25, color="#E63946", edgecolor="white")
+axes[1].axvline(0, color="black", linestyle="--")
+axes[1].set_title("Residuals"); axes[1].set_xlabel("Residual")
+
+# TV spend scenario: how does increasing TV budget change predicted sales?
+tv_range = np.linspace(0, 300, 100)
+scenario = pd.DataFrame({
+    "TV"                  : tv_range,
+    "Radio"               : [df["Radio"].mean()] * 100,
+    "Newspaper"           : [df["Newspaper"].mean()] * 100,
+    "TV_Radio_interaction": tv_range * df["Radio"].mean(),
+    "Total_spend"         : tv_range + df["Radio"].mean() + df["Newspaper"].mean(),
+    "TV_share"            : tv_range / (tv_range + df["Radio"].mean() + df["Newspaper"].mean() + 1e-9),
+    "Radio_share"         : df["Radio"].mean() / (tv_range + df["Radio"].mean() + df["Newspaper"].mean() + 1e-9),
+})
+pred_sales = best_model.predict(scenario.values)
+axes[2].plot(tv_range, pred_sales, color="#E9C46A", lw=2.5)
+axes[2].fill_between(tv_range, pred_sales, alpha=0.15, color="#E9C46A")
+axes[2].set_xlabel("TV Ad Budget ($000s)"); axes[2].set_ylabel("Predicted Sales")
+axes[2].set_title("Sales vs TV Budget (scenario)")
+axes[2].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/sales_results.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Results plot saved → sales_results.png")
+
+# ── 6. Model comparison bar chart ─────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(9, 4))
+names = list(results.keys())
+r2s   = [results[n]["R²"] for n in names]
+colors_bar = ["#E63946","#2A9D8F","#E9C46A","#457B9D","#6D4C41","#9C27B0"]
+bars = ax.barh(names, r2s, color=colors_bar[:len(names)], edgecolor="white")
+for bar, val in zip(bars, r2s):
+    ax.text(bar.get_width() - 0.01, bar.get_y() + bar.get_height()/2,
+            f"{val:.4f}", va="center", ha="right", fontweight="bold", color="white", fontsize=9)
+ax.set_xlim(0.5, 1.02)
+ax.set_title("Model R² Comparison", fontsize=13, fontweight="bold")
+ax.set_xlabel("R² Score")
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/sales_model_comparison.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Model comparison saved → sales_model_comparison.png")
+print("\n✅ Task 4 complete.\n")
