@@ -1,0 +1,145 @@
+"""
+TASK 1: Iris Flower Classification
+CodeAlpha Data Science Internship
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import (
+    accuracy_score, classification_report,
+    confusion_matrix, ConfusionMatrixDisplay
+)
+import warnings
+warnings.filterwarnings("ignore")
+
+# ── 1. Load Data ──────────────────────────────────────────────────────────────
+iris = load_iris()
+df = pd.DataFrame(iris.data, columns=iris.feature_names)
+df["species"] = pd.Categorical.from_codes(iris.target, iris.target_names)
+
+print("=" * 60)
+print("  IRIS FLOWER CLASSIFICATION — CodeAlpha Task 1")
+print("=" * 60)
+print(f"\nDataset shape : {df.shape}")
+print(f"Classes       : {list(iris.target_names)}")
+print(f"\nFirst 5 rows:\n{df.head()}")
+print(f"\nClass distribution:\n{df['species'].value_counts()}")
+
+# ── 2. Exploratory Data Analysis ──────────────────────────────────────────────
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+fig.suptitle("Iris EDA — Feature Distributions & Relationships", fontsize=16, fontweight="bold")
+
+colors = {"setosa": "#E63946", "versicolor": "#2A9D8F", "virginica": "#E9C46A"}
+features = iris.feature_names
+
+# Histograms per feature
+for i, feat in enumerate(features[:3]):
+    ax = axes[0, i]
+    for sp, grp in df.groupby("species"):
+        ax.hist(grp[feat], alpha=0.7, label=sp, color=colors[sp], bins=15, edgecolor="white")
+    ax.set_title(feat.replace(" (cm)", ""), fontsize=11)
+    ax.set_xlabel("cm"); ax.legend(fontsize=8)
+
+# Scatter: sepal
+ax = axes[1, 0]
+for sp, grp in df.groupby("species"):
+    ax.scatter(grp[features[0]], grp[features[1]], alpha=0.8, label=sp,
+               color=colors[sp], edgecolors="white", s=60)
+ax.set_xlabel(features[0]); ax.set_ylabel(features[1])
+ax.set_title("Sepal: Length vs Width"); ax.legend()
+
+# Scatter: petal
+ax = axes[1, 1]
+for sp, grp in df.groupby("species"):
+    ax.scatter(grp[features[2]], grp[features[3]], alpha=0.8, label=sp,
+               color=colors[sp], edgecolors="white", s=60)
+ax.set_xlabel(features[2]); ax.set_ylabel(features[3])
+ax.set_title("Petal: Length vs Width"); ax.legend()
+
+# Correlation heatmap
+ax = axes[1, 2]
+corr = df[features].corr()
+sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=ax,
+            square=True, linewidths=0.5)
+ax.set_title("Feature Correlation")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/iris_eda.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("\n✅ EDA plot saved → iris_eda.png")
+
+# ── 3. Preprocessing ──────────────────────────────────────────────────────────
+X = df[features].values
+y = iris.target
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+scaler = StandardScaler()
+X_train_sc = scaler.fit_transform(X_train)
+X_test_sc  = scaler.transform(X_test)
+
+# ── 4. Train & Compare Models ─────────────────────────────────────────────────
+models = {
+    "KNN (k=5)"          : KNeighborsClassifier(n_neighbors=5),
+    "SVM (RBF)"          : SVC(kernel="rbf", C=1, gamma="scale", probability=True),
+    "Random Forest"      : RandomForestClassifier(n_estimators=100, random_state=42),
+    "Decision Tree"      : DecisionTreeClassifier(max_depth=4, random_state=42),
+}
+
+results = {}
+print("\n─── Model Comparison ───────────────────────────────")
+for name, model in models.items():
+    model.fit(X_train_sc, y_train)
+    y_pred = model.predict(X_test_sc)
+    acc    = accuracy_score(y_test, y_pred)
+    cv_scores = cross_val_score(model, X_train_sc, y_train, cv=5)
+    results[name] = {"accuracy": acc, "cv_mean": cv_scores.mean(), "cv_std": cv_scores.std()}
+    print(f"  {name:<22} Test Acc: {acc:.4f}  CV: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+
+# ── 5. Best model detailed report ─────────────────────────────────────────────
+best_name = max(results, key=lambda n: results[n]["accuracy"])
+best_model = models[best_name]
+y_pred_best = best_model.predict(X_test_sc)
+
+print(f"\n🏆 Best Model: {best_name}")
+print("\nClassification Report:\n")
+print(classification_report(y_test, y_pred_best, target_names=iris.target_names))
+
+# Confusion matrix plot
+fig, ax = plt.subplots(figsize=(6, 5))
+cm = confusion_matrix(y_test, y_pred_best)
+disp = ConfusionMatrixDisplay(cm, display_labels=iris.target_names)
+disp.plot(ax=ax, colorbar=False, cmap="Blues")
+ax.set_title(f"Confusion Matrix — {best_name} (Test Acc: {results[best_name]['accuracy']:.2%})")
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/iris_confusion_matrix.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Confusion matrix saved → iris_confusion_matrix.png")
+
+# Accuracy bar chart
+fig, ax = plt.subplots(figsize=(8, 4))
+names = list(results.keys())
+accs  = [results[n]["accuracy"] for n in names]
+bars  = ax.barh(names, accs, color=["#E63946","#2A9D8F","#E9C46A","#457B9D"], edgecolor="white")
+for bar, acc in zip(bars, accs):
+    ax.text(bar.get_width() - 0.02, bar.get_y() + bar.get_height()/2,
+            f"{acc:.2%}", va="center", ha="right", fontweight="bold", color="white")
+ax.set_xlim(0.85, 1.02)
+ax.set_title("Model Accuracy Comparison", fontsize=13, fontweight="bold")
+ax.set_xlabel("Test Accuracy")
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/iris_model_comparison.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Model comparison saved → iris_model_comparison.png")
+
+print("\n✅ Task 1 complete.\n")
