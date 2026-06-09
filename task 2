@@ -1,0 +1,373 @@
+"""
+TASK 3: Car Price Prediction with Machine Learning
+CodeAlpha Data Science Internship
+
+Dataset columns assumed (common car-price CSV):
+  Car_Name, Year, Selling_Price, Present_Price, Kms_Driven,
+  Fuel_Type, Seller_Type, Transmission, Owner
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings("ignore")
+
+print("=" * 60)
+print("  CAR PRICE PREDICTION — CodeAlpha Task 3")
+print("=" * 60)
+
+# ── 1. Synthetic Dataset (mirrors real Kaggle car-price CSV) ──────────────────
+np.random.seed(42)
+n = 300
+
+brands = ["Toyota","Honda","Ford","BMW","Audi","Hyundai","Maruti","Volkswagen"]
+fuel   = ["Petrol","Diesel","CNG"]
+seller = ["Dealer","Individual"]
+trans  = ["Manual","Automatic"]
+
+car_data = {
+    "Car_Name"       : np.random.choice(brands, n),
+    "Year"           : np.random.randint(2005, 2023, n),
+    "Present_Price"  : np.round(np.random.uniform(3, 40, n), 2),
+    "Kms_Driven"     : np.random.randint(5000, 150000, n),
+    "Fuel_Type"      : np.random.choice(fuel,   n, p=[0.55, 0.35, 0.10]),
+    "Seller_Type"    : np.random.choice(seller, n, p=[0.6,  0.4]),
+    "Transmission"   : np.random.choice(trans,  n, p=[0.70, 0.30]),
+    "Owner"          : np.random.choice([0, 1, 2, 3], n, p=[0.5, 0.3, 0.15, 0.05]),
+}
+
+df = pd.DataFrame(car_data)
+
+# Price formula (realistic)
+age = 2024 - df["Year"]
+df["Selling_Price"] = np.round(
+    df["Present_Price"]
+    - age * 0.8
+    - df["Kms_Driven"] / 50000
+    + (df["Transmission"] == "Automatic") * 2.5
+    + (df["Fuel_Type"] == "Diesel") * 1.5
+    + np.random.normal(0, 1.2, n),
+    2,
+)
+df["Selling_Price"] = df["Selling_Price"].clip(lower=0.5)
+
+print(f"\nDataset shape  : {df.shape}")
+print(f"\nSample rows:\n{df.head()}")
+print(f"\nDescriptive stats:\n{df.describe()}")
+
+# ── 2. Feature Engineering ────────────────────────────────────────────────────
+df["Car_Age"]          = 2024 - df["Year"]
+df["Price_per_km"]     = df["Present_Price"] / (df["Kms_Driven"] + 1)
+df["Depreciation_pct"] = ((df["Present_Price"] - df["Selling_Price"]) / df["Present_Price"]).clip(0, 1)
+
+# Encode categoricals
+le = LabelEncoder()
+for col in ["Car_Name", "Fuel_Type", "Seller_Type", "Transmission"]:
+    df[col + "_enc"] = le.fit_transform(df[col])
+
+print("\n✅ Feature engineering done.")
+
+# ── 3. EDA Plots ──────────────────────────────────────────────────────────────
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+fig.suptitle("Car Price — Exploratory Data Analysis", fontsize=15, fontweight="bold")
+
+# Distribution of selling price
+axes[0,0].hist(df["Selling_Price"], bins=30, color="#2A9D8F", edgecolor="white")
+axes[0,0].set_title("Selling Price Distribution"); axes[0,0].set_xlabel("Price (Lakhs)")
+
+# Price vs Age
+axes[0,1].scatter(df["Car_Age"], df["Selling_Price"], alpha=0.5, color="#E63946", s=30)
+axes[0,1].set_title("Car Age vs Selling Price")
+axes[0,1].set_xlabel("Age (years)"); axes[0,1].set_ylabel("Price (Lakhs)")
+
+# Price vs Present Price
+axes[0,2].scatter(df["Present_Price"], df["Selling_Price"], alpha=0.5, color="#E9C46A", s=30)
+axes[0,2].set_title("Present Price vs Selling Price")
+axes[0,2].set_xlabel("Present Price"); axes[0,2].set_ylabel("Selling Price")
+
+# Fuel type boxplot
+df.boxplot(column="Selling_Price", by="Fuel_Type", ax=axes[1,0])
+axes[1,0].set_title("Price by Fuel Type"); axes[1,0].set_xlabel("")
+
+# Transmission boxplot
+df.boxplot(column="Selling_Price", by="Transmission", ax=axes[1,1])
+axes[1,1].set_title("Price by Transmission"); axes[1,1].set_xlabel("")
+
+# Correlation heatmap
+num_cols = ["Selling_Price","Car_Age","Present_Price","Kms_Driven","Owner","Price_per_km"]
+sns.heatmap(df[num_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm",
+            ax=axes[1,2], square=True, linewidths=0.5)
+axes[1,2].set_title("Correlation Matrix")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_price_eda.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ EDA plot saved → car_price_eda.png")
+
+# ── 4. Model Training ─────────────────────────────────────────────────────────
+feature_cols = [
+    "Present_Price", "Kms_Driven", "Owner", "Car_Age",
+    "Price_per_km", "Fuel_Type_enc", "Seller_Type_enc",
+    "Transmission_enc", "Car_Name_enc"
+]
+X = df[feature_cols].values
+y = df["Selling_Price"].values
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+scaler = StandardScaler()
+X_train_sc = scaler.fit_transform(X_train)
+X_test_sc  = scaler.transform(X_test)
+
+models = {
+    "Linear Regression"       : LinearRegression(),
+    "Ridge Regression"        : Ridge(alpha=1.0),
+    "Random Forest"           : RandomForestRegressor(n_estimators=100, random_state=42),
+    "Gradient Boosting"       : GradientBoostingRegressor(n_estimators=100, random_state=42),
+}
+
+results = {}
+print("\n─── Regression Model Comparison ────────────────────")
+for name, model in models.items():
+    model.fit(X_train_sc, y_train)
+    y_pred = model.predict(X_test_sc)
+    r2  = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    results[name] = {"R²": r2, "MAE": mae, "RMSE": rmse, "y_pred": y_pred}
+    print(f"  {name:<28} R²={r2:.4f}  MAE={mae:.4f}  RMSE={rmse:.4f}")
+
+# ── 5. Best model visualisation ───────────────────────────────────────────────
+best_name = max(results, key=lambda n: results[n]["R²"])
+y_pred_best = results[best_name]["y_pred"]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle(f"Best Model: {best_name} — R²={results[best_name]['R²']:.4f}", fontsize=13, fontweight="bold")
+
+# Actual vs Predicted
+axes[0].scatter(y_test, y_pred_best, alpha=0.6, color="#2A9D8F", s=50)
+mn, mx = y_test.min(), y_test.max()
+axes[0].plot([mn, mx], [mn, mx], "r--", lw=2)
+axes[0].set_xlabel("Actual Price"); axes[0].set_ylabel("Predicted Price")
+axes[0].set_title("Actual vs Predicted")
+
+# Residuals
+residuals = y_test - y_pred_best
+axes[1].hist(residuals, bins=30, color="#E63946", edgecolor="white")
+axes[1].axvline(0, color="black", linestyle="--")
+axes[1].set_title("Residual Distribution"); axes[1].set_xlabel("Residual (Actual − Predicted)")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_price_results.png", dpi=150, bbox_inches="tight")
+plt.close()
+print(f"✅ Results plot saved → car_price_results.png")
+
+# Feature importance (Random Forest)
+rf = models["Random Forest"]
+importances = rf.feature_importances_
+feat_df = pd.DataFrame({"Feature": feature_cols, "Importance": importances})
+feat_df = feat_df.sort_values("Importance", ascending=True)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.barh(feat_df["Feature"], feat_df["Importance"], color="#457B9D", edgecolor="white")
+ax.set_title("Feature Importances — Random Forest", fontsize=13, fontweight="bold")
+ax.set_xlabel("Importance")
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_feature_importance.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Feature importance saved → car_feature_importance.png")
+print("\n✅ Task 3 complete.\n")"""
+TASK 3: Car Price Prediction with Machine Learning
+CodeAlpha Data Science Internship
+
+Dataset columns assumed (common car-price CSV):
+  Car_Name, Year, Selling_Price, Present_Price, Kms_Driven,
+  Fuel_Type, Seller_Type, Transmission, Owner
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+import warnings
+warnings.filterwarnings("ignore")
+
+print("=" * 60)
+print("  CAR PRICE PREDICTION — CodeAlpha Task 3")
+print("=" * 60)
+
+# ── 1. Synthetic Dataset (mirrors real Kaggle car-price CSV) ──────────────────
+np.random.seed(42)
+n = 300
+
+brands = ["Toyota","Honda","Ford","BMW","Audi","Hyundai","Maruti","Volkswagen"]
+fuel   = ["Petrol","Diesel","CNG"]
+seller = ["Dealer","Individual"]
+trans  = ["Manual","Automatic"]
+
+car_data = {
+    "Car_Name"       : np.random.choice(brands, n),
+    "Year"           : np.random.randint(2005, 2023, n),
+    "Present_Price"  : np.round(np.random.uniform(3, 40, n), 2),
+    "Kms_Driven"     : np.random.randint(5000, 150000, n),
+    "Fuel_Type"      : np.random.choice(fuel,   n, p=[0.55, 0.35, 0.10]),
+    "Seller_Type"    : np.random.choice(seller, n, p=[0.6,  0.4]),
+    "Transmission"   : np.random.choice(trans,  n, p=[0.70, 0.30]),
+    "Owner"          : np.random.choice([0, 1, 2, 3], n, p=[0.5, 0.3, 0.15, 0.05]),
+}
+
+df = pd.DataFrame(car_data)
+
+# Price formula (realistic)
+age = 2024 - df["Year"]
+df["Selling_Price"] = np.round(
+    df["Present_Price"]
+    - age * 0.8
+    - df["Kms_Driven"] / 50000
+    + (df["Transmission"] == "Automatic") * 2.5
+    + (df["Fuel_Type"] == "Diesel") * 1.5
+    + np.random.normal(0, 1.2, n),
+    2,
+)
+df["Selling_Price"] = df["Selling_Price"].clip(lower=0.5)
+
+print(f"\nDataset shape  : {df.shape}")
+print(f"\nSample rows:\n{df.head()}")
+print(f"\nDescriptive stats:\n{df.describe()}")
+
+# ── 2. Feature Engineering ────────────────────────────────────────────────────
+df["Car_Age"]          = 2024 - df["Year"]
+df["Price_per_km"]     = df["Present_Price"] / (df["Kms_Driven"] + 1)
+df["Depreciation_pct"] = ((df["Present_Price"] - df["Selling_Price"]) / df["Present_Price"]).clip(0, 1)
+
+# Encode categoricals
+le = LabelEncoder()
+for col in ["Car_Name", "Fuel_Type", "Seller_Type", "Transmission"]:
+    df[col + "_enc"] = le.fit_transform(df[col])
+
+print("\n✅ Feature engineering done.")
+
+# ── 3. EDA Plots ──────────────────────────────────────────────────────────────
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+fig.suptitle("Car Price — Exploratory Data Analysis", fontsize=15, fontweight="bold")
+
+# Distribution of selling price
+axes[0,0].hist(df["Selling_Price"], bins=30, color="#2A9D8F", edgecolor="white")
+axes[0,0].set_title("Selling Price Distribution"); axes[0,0].set_xlabel("Price (Lakhs)")
+
+# Price vs Age
+axes[0,1].scatter(df["Car_Age"], df["Selling_Price"], alpha=0.5, color="#E63946", s=30)
+axes[0,1].set_title("Car Age vs Selling Price")
+axes[0,1].set_xlabel("Age (years)"); axes[0,1].set_ylabel("Price (Lakhs)")
+
+# Price vs Present Price
+axes[0,2].scatter(df["Present_Price"], df["Selling_Price"], alpha=0.5, color="#E9C46A", s=30)
+axes[0,2].set_title("Present Price vs Selling Price")
+axes[0,2].set_xlabel("Present Price"); axes[0,2].set_ylabel("Selling Price")
+
+# Fuel type boxplot
+df.boxplot(column="Selling_Price", by="Fuel_Type", ax=axes[1,0])
+axes[1,0].set_title("Price by Fuel Type"); axes[1,0].set_xlabel("")
+
+# Transmission boxplot
+df.boxplot(column="Selling_Price", by="Transmission", ax=axes[1,1])
+axes[1,1].set_title("Price by Transmission"); axes[1,1].set_xlabel("")
+
+# Correlation heatmap
+num_cols = ["Selling_Price","Car_Age","Present_Price","Kms_Driven","Owner","Price_per_km"]
+sns.heatmap(df[num_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm",
+            ax=axes[1,2], square=True, linewidths=0.5)
+axes[1,2].set_title("Correlation Matrix")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_price_eda.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ EDA plot saved → car_price_eda.png")
+
+# ── 4. Model Training ─────────────────────────────────────────────────────────
+feature_cols = [
+    "Present_Price", "Kms_Driven", "Owner", "Car_Age",
+    "Price_per_km", "Fuel_Type_enc", "Seller_Type_enc",
+    "Transmission_enc", "Car_Name_enc"
+]
+X = df[feature_cols].values
+y = df["Selling_Price"].values
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+scaler = StandardScaler()
+X_train_sc = scaler.fit_transform(X_train)
+X_test_sc  = scaler.transform(X_test)
+
+models = {
+    "Linear Regression"       : LinearRegression(),
+    "Ridge Regression"        : Ridge(alpha=1.0),
+    "Random Forest"           : RandomForestRegressor(n_estimators=100, random_state=42),
+    "Gradient Boosting"       : GradientBoostingRegressor(n_estimators=100, random_state=42),
+}
+
+results = {}
+print("\n─── Regression Model Comparison ────────────────────")
+for name, model in models.items():
+    model.fit(X_train_sc, y_train)
+    y_pred = model.predict(X_test_sc)
+    r2  = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    results[name] = {"R²": r2, "MAE": mae, "RMSE": rmse, "y_pred": y_pred}
+    print(f"  {name:<28} R²={r2:.4f}  MAE={mae:.4f}  RMSE={rmse:.4f}")
+
+# ── 5. Best model visualisation ───────────────────────────────────────────────
+best_name = max(results, key=lambda n: results[n]["R²"])
+y_pred_best = results[best_name]["y_pred"]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle(f"Best Model: {best_name} — R²={results[best_name]['R²']:.4f}", fontsize=13, fontweight="bold")
+
+# Actual vs Predicted
+axes[0].scatter(y_test, y_pred_best, alpha=0.6, color="#2A9D8F", s=50)
+mn, mx = y_test.min(), y_test.max()
+axes[0].plot([mn, mx], [mn, mx], "r--", lw=2)
+axes[0].set_xlabel("Actual Price"); axes[0].set_ylabel("Predicted Price")
+axes[0].set_title("Actual vs Predicted")
+
+# Residuals
+residuals = y_test - y_pred_best
+axes[1].hist(residuals, bins=30, color="#E63946", edgecolor="white")
+axes[1].axvline(0, color="black", linestyle="--")
+axes[1].set_title("Residual Distribution"); axes[1].set_xlabel("Residual (Actual − Predicted)")
+
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_price_results.png", dpi=150, bbox_inches="tight")
+plt.close()
+print(f"✅ Results plot saved → car_price_results.png")
+
+# Feature importance (Random Forest)
+rf = models["Random Forest"]
+importances = rf.feature_importances_
+feat_df = pd.DataFrame({"Feature": feature_cols, "Importance": importances})
+feat_df = feat_df.sort_values("Importance", ascending=True)
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.barh(feat_df["Feature"], feat_df["Importance"], color="#457B9D", edgecolor="white")
+ax.set_title("Feature Importances — Random Forest", fontsize=13, fontweight="bold")
+ax.set_xlabel("Importance")
+plt.tight_layout()
+plt.savefig("/mnt/user-data/outputs/car_feature_importance.png", dpi=150, bbox_inches="tight")
+plt.close()
+print("✅ Feature importance saved → car_feature_importance.png")
+print("\n✅ Task 3 complete.\n")
